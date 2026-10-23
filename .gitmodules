@@ -1,0 +1,7 @@
+[submodule "vendor/Seeed_GFX2"]
+	path = vendor/Seeed_GFX2
+	url = https://github.com/Seeed-Studio/Seeed_GFX2
+[submodule "vendor/Display-Gadgets"]
+	path = vendor/Display-Gadgets
+	url = https://github.com/Seeed-Projects/Display-Gadgets
+	update = none

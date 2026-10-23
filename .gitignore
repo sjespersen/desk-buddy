@@ -1,0 +1,6 @@
+build/
+.venv-cad/
+__pycache__/
+backup/
+case/out/preview_*.png
+.DS_Store
