@@ -3,7 +3,22 @@
 bool servicesUp = false;
 bool everConnected = false;
 uint32_t wifiStartedAt = 0;
+uint32_t wifiDownSince = 0;
+uint32_t wifiRetryAt = 0;
 String scannedOptions;
+
+static constexpr uint32_t WIFI_RETRY_MS = 60000;         // re-dial the saved network this often while it's down
+static constexpr uint32_t WIFI_GIVE_UP_MS = 10 * 60000;  // then reboot, which clears any stuck driver state
+
+// Dial the saved network again, also from the setup portal (the router may just have
+// been slower to boot than the buddy).
+void wifiRedial() {
+  String ssid = prefs.getString("ssid", "");
+  if (ssid.isEmpty()) return;
+  WiFi.disconnect();
+  WiFi.begin(ssid.c_str(), prefs.getString("pass", "").c_str());
+  wifiRetryAt = millis();
+}
 
 void netBegin() {
   String ssid = prefs.getString("ssid", "");
@@ -21,15 +36,31 @@ void netBegin() {
 }
 
 void netLoop() {
+  uint32_t now = millis();
   if (setupMode) {
     dns.processNextRequest();
     server.handleClient();
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("[SETUP] saved network is back, rebooting");
+      ESP.restart();
+    }
+    if (now - wifiRetryAt > WIFI_RETRY_MS) wifiRedial();
     return;
   }
   bool up = WiFi.status() == WL_CONNECTED;
   if (up && !wifiUp) onWifiUp();
-  if (!up && wifiUp) Serial.println("[WIFI] lost connection, retrying");
+  if (!up && wifiUp) {
+    Serial.println("[WIFI] lost connection, retrying");
+    wifiDownSince = wifiRetryAt = now;
+  }
   wifiUp = up;
+  if (!up && everConnected) {
+    if (now - wifiDownSince > WIFI_GIVE_UP_MS) {
+      Serial.println("[WIFI] still down, rebooting");
+      ESP.restart();
+    }
+    if (now - wifiRetryAt > WIFI_RETRY_MS) wifiRedial();
+  }
   if (!up && !everConnected && millis() - wifiStartedAt > 30000) {
     Serial.println("[WIFI] could not connect, starting setup portal");
     startSetupPortal();
@@ -46,8 +77,10 @@ void onWifiUp() {
   char tz[32];
   strlcpy(tz, tzOffsetApplied == INT32_MIN ? TZ_INFO : getenv("TZ"), sizeof(tz));
   configTzTime(tz, "pool.ntp.org", "time.google.com");
-  if (servicesUp) return;
+  // Restart mDNS on every (re)connect so buddy.local answers again
+  MDNS.end();
   if (MDNS.begin(HOSTNAME)) MDNS.addService("http", "tcp", 80);
+  if (servicesUp) return;
   server.on("/", HTTP_GET, [] {
     server.send(200, "text/plain", "Hi, I'm your desk buddy. GET /api/state for debug info, POST /api/location to pin the weather location, POST /api/wake to wake the Mac.\n");
   });
@@ -127,6 +160,7 @@ void startSetupPortal() {
     scannedOptions += "<option value=\"" + htmlEscape(WiFi.SSID(i)) + "\">";
   }
   WiFi.softAP(SETUP_AP);
+  wifiRedial();  // keep trying the saved network in the background
   dns.start(53, "*", WiFi.softAPIP());
   server.on("/", HTTP_GET, [] {
     String page =
